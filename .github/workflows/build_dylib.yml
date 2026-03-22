@@ -1,0 +1,97 @@
+name: Build DyLib
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive_url:
+        description: 'Download URL for the source archive'
+        required: true
+      language:
+        description: 'Language: c, cpp, swift, objc'
+        required: true
+      output_name:
+        description: 'Output .dylib filename'
+        required: true
+      job_id:
+        description: 'Unique job ID for tracking'
+        required: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Download source archive
+        run: |
+          curl -L "${{ github.event.inputs.archive_url }}" -o project.zip
+          mkdir -p source
+          unzip -q project.zip -d source || tar -xzf project.zip -C source || true
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Get iOS SDK path
+        id: sdk
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "path=$SDK" >> $GITHUB_OUTPUT
+
+      - name: Compile C
+        if: github.event.inputs.language == 'c'
+        run: |
+          SOURCES=$(find source -name "*.c" | tr '\n' ' ')
+          INCLUDES=$(find source -type d | sed 's/^/-I/' | tr '\n' ' ')
+          clang -arch arm64 \
+            --target=arm64-apple-ios15.0 \
+            -isysroot "${{ steps.sdk.outputs.path }}" \
+            -dynamiclib -fPIC -std=c11 -O2 \
+            $INCLUDES $SOURCES \
+            -o "${{ github.event.inputs.output_name }}"
+
+      - name: Compile C++
+        if: github.event.inputs.language == 'cpp'
+        run: |
+          SOURCES=$(find source -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" | tr '\n' ' ')
+          INCLUDES=$(find source -type d | sed 's/^/-I/' | tr '\n' ' ')
+          clang++ -arch arm64 \
+            --target=arm64-apple-ios15.0 \
+            -isysroot "${{ steps.sdk.outputs.path }}" \
+            -dynamiclib -fPIC -std=c++17 -O2 \
+            $INCLUDES $SOURCES \
+            -o "${{ github.event.inputs.output_name }}"
+
+      - name: Compile Swift
+        if: github.event.inputs.language == 'swift'
+        run: |
+          SOURCES=$(find source -name "*.swift" | tr '\n' ' ')
+          MODULE=$(echo "${{ github.event.inputs.output_name }}" | sed 's/\.dylib//' | tr '-' '_')
+          swiftc -target arm64-apple-ios15.0 \
+            -sdk "${{ steps.sdk.outputs.path }}" \
+            -emit-library \
+            -module-name "$MODULE" \
+            -O \
+            $SOURCES \
+            -o "${{ github.event.inputs.output_name }}"
+
+      - name: Compile Objective-C
+        if: github.event.inputs.language == 'objc'
+        run: |
+          SOURCES=$(find source -name "*.m" -o -name "*.mm" -o -name "*.c" | tr '\n' ' ')
+          INCLUDES=$(find source -type d | sed 's/^/-I/' | tr '\n' ' ')
+          clang -arch arm64 \
+            --target=arm64-apple-ios15.0 \
+            -isysroot "${{ steps.sdk.outputs.path }}" \
+            -dynamiclib -fPIC -fobjc-arc \
+            -framework Foundation \
+            -O2 \
+            $INCLUDES $SOURCES \
+            -o "${{ github.event.inputs.output_name }}"
+
+      - name: Upload dylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dylib-output-${{ github.event.inputs.job_id }}
+          path: ${{ github.event.inputs.output_name }}
+          retention-days: 1
