@@ -60,11 +60,11 @@ jobs:
           mkdir -p $HOME/substrate/include $HOME/substrate/lib
           cp $HOME/theos/include/substrate.h $HOME/substrate/include/substrate.h 2>/dev/null || true
           cp $HOME/substrate/include/substrate.h $HOME/substrate/include/CydiaSubstrate.h 2>/dev/null || true
-          printf 'void MSHookFunction(void *sym, void *hook, void **old) {}\n' > /tmp/substrate_stub.c
-          printf 'void MSHookMessageEx(void *cls, void *sel, void *hook, void **old) {}\n' >> /tmp/substrate_stub.c
-          printf 'void *MSFindSymbol(void *img, const char *name) { return 0; }\n' >> /tmp/substrate_stub.c
-          printf 'void MSImageRef(void) {}\n' >> /tmp/substrate_stub.c
-          clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC /tmp/substrate_stub.c -o $HOME/substrate/lib/libsubstrate.dylib || true
+          printf 'void MSHookFunction(void *sym, void *hook, void **old) {}\n' > /tmp/ss.c
+          printf 'void MSHookMessageEx(void *cls, void *sel, void *hook, void **old) {}\n' >> /tmp/ss.c
+          printf 'void *MSFindSymbol(void *img, const char *name) { return 0; }\n' >> /tmp/ss.c
+          printf 'void MSImageRef(void) {}\n' >> /tmp/ss.c
+          clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC /tmp/ss.c -o $HOME/substrate/lib/libsubstrate.dylib || true
 
       - name: Prepare fishhook
         run: |
@@ -78,33 +78,55 @@ jobs:
         run: |
           SDK="${{ steps.sdk.outputs.path }}"
           OUT="${{ github.event.inputs.output_name }}"
-          find source -type d > /tmp/inc_dirs.txt
-          echo "$HOME/theos/include" >> /tmp/inc_dirs.txt
-          echo "$HOME/theos/vendor/include" >> /tmp/inc_dirs.txt
-          echo "$HOME/substrate/include" >> /tmp/inc_dirs.txt
           INCLUDES=""
           while IFS= read -r d; do
-            [ -d "$d" ] && INCLUDES="$INCLUDES -I$d"
-          done < /tmp/inc_dirs.txt
-          SOURCES=$(find source \( -name "*.m" -o -name "*.mm" -o -name "*.mmh" -o -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" \) | tr '\n' ' ')
+            [ -d "$d" ] && INCLUDES="$INCLUDES \"-I$d\""
+          done < <(find source -type d; echo "$HOME/theos/include"; echo "$HOME/theos/vendor/include"; echo "$HOME/substrate/include")
+          SRCFILE="/tmp/sources_list.txt"
+          > "$SRCFILE"
+          while IFS= read -r -d '' f; do
+            echo "\"$f\"" >> "$SRCFILE"
+          done < <(find source \( -name "*.m" -o -name "*.mm" -o -name "*.mmh" -o -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c++" -o -name "*.c" \) -print0)
+          SOURCES=$(cat "$SRCFILE" | tr '\n' ' ')
+          echo "=== SOURCES ===" && cat "$SRCFILE"
           LDFLAGS=""
           [ -f "$HOME/substrate/lib/libsubstrate.dylib" ] && LDFLAGS="-L$HOME/substrate/lib -lsubstrate"
-          clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot "$SDK" -dynamiclib -fPIC -std=c++17 -fobjc-arc -fmodules -DTHEOS_LEAN_AND_MEAN -DTARGET_OS_IPHONE=1 -framework Foundation -framework UIKit -framework CoreGraphics -framework CoreFoundation -framework Security -lobjc $LDFLAGS $INCLUDES $SOURCES -o "$OUT"
+          eval clang++ -arch arm64 \
+            --target=arm64-apple-ios15.0 \
+            -isysroot \"$SDK\" \
+            -dynamiclib -fPIC \
+            -std=c++17 \
+            -fobjc-arc \
+            -fmodules \
+            -DTHEOS_LEAN_AND_MEAN \
+            -DTARGET_OS_IPHONE=1 \
+            -framework Foundation \
+            -framework UIKit \
+            -framework CoreGraphics \
+            -framework CoreFoundation \
+            -framework Security \
+            -framework CoreMotion \
+            -framework AVFoundation \
+            -lobjc \
+            $LDFLAGS \
+            $INCLUDES \
+            $SOURCES \
+            -o \"$OUT\"
           file "$OUT" && ls -lh "$OUT"
 
       - name: Compile C
         if: github.event.inputs.language == 'c'
         run: |
-          INCLUDES=$(find source -type d | sed 's/^/-I/' | tr '\n' ' ')
-          SOURCES=$(find source -name "*.c" | tr '\n' ' ')
-          clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC -std=c11 -O2 $INCLUDES $SOURCES -o "${{ github.event.inputs.output_name }}"
+          INCLUDES=$(find source -type d | sed 's/.*/-I"&"/' | tr '\n' ' ')
+          SOURCES=$(find source -name "*.c" | sed 's/.*/\"&\"/' | tr '\n' ' ')
+          eval clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC -std=c11 -O2 $INCLUDES $SOURCES -o "${{ github.event.inputs.output_name }}"
 
       - name: Compile C++
         if: github.event.inputs.language == 'cpp'
         run: |
-          INCLUDES=$(find source -type d | sed 's/^/-I/' | tr '\n' ' ')
-          SOURCES=$(find source \( -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" \) | tr '\n' ' ')
-          clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC -std=c++17 -O2 $INCLUDES $SOURCES -o "${{ github.event.inputs.output_name }}"
+          INCLUDES=$(find source -type d | sed 's/.*/-I"&"/' | tr '\n' ' ')
+          SOURCES=$(find source \( -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c" \) | sed 's/.*/\"&\"/' | tr '\n' ' ')
+          eval clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC -std=c++17 -O2 $INCLUDES $SOURCES -o "${{ github.event.inputs.output_name }}"
 
       - name: Compile Swift
         if: github.event.inputs.language == 'swift'
