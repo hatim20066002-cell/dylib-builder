@@ -78,28 +78,44 @@ jobs:
         run: |
           SDK="${{ steps.sdk.outputs.path }}"
           OUT="${{ github.event.inputs.output_name }}"
+
+          find source -name 'initializer_list' ! -name '*.h' -delete 2>/dev/null || true
+          find source -name 'c++config.h' -delete 2>/dev/null || true
+          find source -path '*/bits/*' -delete 2>/dev/null || true
+
           INCLUDES=""
           while IFS= read -r d; do
             [ -d "$d" ] && INCLUDES="$INCLUDES \"-I$d\""
           done < <(find source -type d; echo "$HOME/theos/include"; echo "$HOME/theos/vendor/include"; echo "$HOME/substrate/include")
-          SRCFILE="/tmp/sources_list.txt"
-          > "$SRCFILE"
+
+          SRCFILE_CPP="/tmp/src_cpp.txt"
+          > "$SRCFILE_CPP"
           while IFS= read -r -d '' f; do
-            echo "\"$f\"" >> "$SRCFILE"
-          done < <(find source \( -name "*.m" -o -name "*.mm" -o -name "*.mmh" -o -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c++" -o -name "*.c" \) -print0)
-          SOURCES=$(cat "$SRCFILE" | tr '\n' ' ')
-          echo "=== SOURCES ===" && cat "$SRCFILE"
+            echo "\"$f\"" >> "$SRCFILE_CPP"
+          done < <(find source \( -name "*.mm" -o -name "*.mmh" -o -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" \) -print0)
+
+          SRCFILE_C="/tmp/src_c.txt"
+          > "$SRCFILE_C"
+          while IFS= read -r -d '' f; do
+            echo "\"$f\"" >> "$SRCFILE_C"
+          done < <(find source \( -name "*.m" -o -name "*.c" \) -print0)
+
           LDFLAGS=""
           [ -f "$HOME/substrate/lib/libsubstrate.dylib" ] && LDFLAGS="-L$HOME/substrate/lib -lsubstrate"
+
+          SOURCES_CPP=$(cat "$SRCFILE_CPP" | tr '\n' ' ')
+          SOURCES_C=$(cat "$SRCFILE_C" | tr '\n' ' ')
+
           eval clang++ -arch arm64 \
             --target=arm64-apple-ios15.0 \
             -isysroot \"$SDK\" \
             -dynamiclib -fPIC \
             -std=c++17 \
             -fobjc-arc \
-            -fmodules \
             -DTHEOS_LEAN_AND_MEAN \
             -DTARGET_OS_IPHONE=1 \
+            -Wno-deprecated-declarations \
+            -Wno-unused-comparison \
             -framework Foundation \
             -framework UIKit \
             -framework CoreGraphics \
@@ -110,8 +126,31 @@ jobs:
             -lobjc \
             $LDFLAGS \
             $INCLUDES \
-            $SOURCES \
+            $SOURCES_CPP \
             -o \"$OUT\"
+
+          if [ -s "$SRCFILE_C" ]; then
+            eval clang -arch arm64 \
+              --target=arm64-apple-ios15.0 \
+              -isysroot \"$SDK\" \
+              -c -fobjc-arc \
+              -Wno-deprecated-declarations \
+              $INCLUDES \
+              $SOURCES_C || true
+            OBJ_FILES=$(find . -maxdepth 1 -name "*.o" | tr '\n' ' ')
+            if [ -n "$OBJ_FILES" ]; then
+              clang++ -arch arm64 \
+                --target=arm64-apple-ios15.0 \
+                -isysroot "$SDK" \
+                -dynamiclib -fPIC \
+                $LDFLAGS \
+                -framework Foundation \
+                -lobjc \
+                "$OUT" $OBJ_FILES \
+                -o "${OUT}.final" && mv "${OUT}.final" "$OUT" || true
+            fi
+          fi
+
           file "$OUT" && ls -lh "$OUT"
 
       - name: Compile C
