@@ -59,17 +59,23 @@ jobs:
         run: |
           mkdir -p $HOME/substrate/include/CydiaSubstrate
           mkdir -p $HOME/substrate/lib
+
           SUBSTRATE_SRC="$HOME/theos/include/substrate.h"
           [ ! -f "$SUBSTRATE_SRC" ] && curl -fsSL "https://raw.githubusercontent.com/theos/theos/master/include/substrate.h" -o "$SUBSTRATE_SRC" || true
+
           cp "$SUBSTRATE_SRC" $HOME/substrate/include/substrate.h 2>/dev/null || true
           cp "$SUBSTRATE_SRC" $HOME/substrate/include/CydiaSubstrate.h 2>/dev/null || true
           cp "$SUBSTRATE_SRC" $HOME/substrate/include/CydiaSubstrate/CydiaSubstrate.h 2>/dev/null || true
-          VENDOR_SUB="$HOME/theos/vendor/include/substrate.h"
-          [ -f "$VENDOR_SUB" ] && cp "$SUBSTRATE_SRC" "$VENDOR_SUB" 2>/dev/null || true
+
+          rm -f "$HOME/theos/vendor/include/substrate.h" 2>/dev/null || true
+          mkdir -p "$HOME/theos/vendor/include/CydiaSubstrate"
+          cp "$SUBSTRATE_SRC" "$HOME/theos/vendor/include/CydiaSubstrate/CydiaSubstrate.h" 2>/dev/null || true
+
           printf 'void MSHookFunction(void *sym, void *hook, void **old) {}\n' > /tmp/ss.c
           printf 'void MSHookMessageEx(void *cls, void *sel, void *hook, void **old) {}\n' >> /tmp/ss.c
           printf 'void *MSFindSymbol(void *img, const char *name) { return 0; }\n' >> /tmp/ss.c
           printf 'void MSImageRef(void) {}\n' >> /tmp/ss.c
+
           clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot "${{ steps.sdk.outputs.path }}" -dynamiclib -fPIC /tmp/ss.c -o $HOME/substrate/lib/libsubstrate.dylib || true
           find $HOME/substrate -type f
 
@@ -92,6 +98,7 @@ jobs:
         run: |
           SDK="${{ steps.sdk.outputs.path }}"
           OUT="${{ github.event.inputs.output_name }}"
+
           INCLUDES=""
           while IFS= read -r d; do
             [ -d "$d" ] && INCLUDES="$INCLUDES \"-I$d\""
@@ -102,36 +109,48 @@ jobs:
             echo "$HOME/substrate/include"
             echo "$HOME/substrate/include/CydiaSubstrate"
           )
+
           > /tmp/src_cxx.txt
           while IFS= read -r -d '' f; do
             echo "\"$f\"" >> /tmp/src_cxx.txt
           done < <(find source \( -name "*.mm" -o -name "*.mmh" -o -name "*.cpp" -o -name "*.cxx" -o -name "*.cc" -o -name "*.c++" \) -print0)
+
           > /tmp/src_m.txt
           while IFS= read -r -d '' f; do
             echo "\"$f\"" >> /tmp/src_m.txt
           done < <(find source -name "*.m" -print0)
+
           > /tmp/src_c.txt
           while IFS= read -r -d '' f; do
             echo "\"$f\"" >> /tmp/src_c.txt
           done < <(find source -name "*.c" -print0)
+
           SOURCES_CXX=$(cat /tmp/src_cxx.txt | tr '\n' ' ')
           SOURCES_M=$(cat /tmp/src_m.txt | tr '\n' ' ')
           SOURCES_C=$(cat /tmp/src_c.txt | tr '\n' ' ')
+
           LDFLAGS=""
           [ -f "$HOME/substrate/lib/libsubstrate.dylib" ] && LDFLAGS="-L$HOME/substrate/lib -lsubstrate"
+
           FRAMEWORKS="-framework Foundation -framework UIKit -framework CoreGraphics -framework CoreFoundation -framework Security -framework CoreMotion -framework AVFoundation"
+
           if [ -s /tmp/src_cxx.txt ]; then
             eval clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot \"$SDK\" -c -std=c++17 -fobjc-arc -DTHEOS_LEAN_AND_MEAN -DTARGET_OS_IPHONE=1 -Wno-deprecated-declarations -Wno-unused-comparison $INCLUDES $SOURCES_CXX || true
           fi
+
           if [ -s /tmp/src_m.txt ]; then
             eval clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot \"$SDK\" -c -fobjc-arc -DTHEOS_LEAN_AND_MEAN -DTARGET_OS_IPHONE=1 -Wno-deprecated-declarations $INCLUDES $SOURCES_M || true
           fi
+
           if [ -s /tmp/src_c.txt ]; then
             eval clang -arch arm64 --target=arm64-apple-ios15.0 -isysroot \"$SDK\" -c -Wno-deprecated-declarations $INCLUDES $SOURCES_C || true
           fi
+
           OBJ_FILES=$(find . -maxdepth 1 -name "*.o" | tr '\n' ' ')
           echo "=== Linking ==="
-          clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot "$SDK" -dynamiclib -fPIC -lobjc $FRAMEWORKS $LDFLAGS $OBJ_FILES -o "$OUT"
+
+          clang++ -arch arm64 --target=arm64-apple-ios15.0 -isysroot "$SDK" -dynamiclib -fPIC -undefined dynamic_lookup -lobjc $FRAMEWORKS $LDFLAGS $OBJ_FILES -o "$OUT"
+
           file "$OUT" && ls -lh "$OUT"
 
       - name: Compile C
